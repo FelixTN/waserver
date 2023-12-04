@@ -437,9 +437,11 @@ function destroyClient(account) {
         clients[account].client = null;
     }
 }
+
 function getTypeWhatsApp(client) {
     return (client.info.platform === 'smbi' || client.info.platform === 'smba') ? 'business' : 'consumer';
 }
+
 async function getMe(client) {
     return await client.getProfilePicUrl(this.info.wid._serialized)
         .then(profilePicUrl => {
@@ -504,10 +506,30 @@ io.on("connection", socket => {
         });
         
         socket.on('send_message', (data) => {
-            const [account, chatId, message] = data;
+            const [account, chatId, message, quotedId] = data;
             
             if (clients.hasOwnProperty(account) && clients[account].client !== null) {
-                clients[account].client.sendMessage(chatId, message);
+                clients[account].client.sendSeen(chatId);
+                if (quotedId !== null) {
+                    clients[account].client.getMessageById(quotedId).then((messageToReply) => {
+                        if (messageToReply != null) {
+                            messageToReply.reply(message);
+                        }
+                    });
+                } else {
+                    clients[account].client.sendMessage(chatId, message);
+                }
+            }
+        });
+        
+        socket.on('delete_message', (data) => {
+            const [account, messageId, all] = data;
+            if (clients.hasOwnProperty(account) && clients[account].client !== null) {
+                clients[account].client.getMessageById(messageId._serialized).then((message) => {
+                    if (message != null) {
+                        message.delete(all);
+                    }
+                });
             }
         });
         
