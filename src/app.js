@@ -3,6 +3,9 @@ const {createServer} = require("http");
 const {Server} = require("socket.io");
 const qrcode = require('qrcode');
 const fs = require("fs");
+const axios = require('axios');
+const crypto = require('crypto');
+require('dotenv').config();
 
 const httpServer = createServer();
 const io = new Server(httpServer, {
@@ -38,13 +41,13 @@ const updateListSockets = (account, socket, deleteSockets = false) => {
 }
 const checkClient = account => {
     return clients.hasOwnProperty(account) &&
-        clients[account].hasOwnProperty('active') &&
-        clients[account].active === true && clients[account].client !== null;
+        clients[account].client !== null;
 };
 const emitToAllSockets = (account, event, ...args) => {
     if (clients.hasOwnProperty(account)) {
         Object.values(clients[account].sockets).forEach((connection) => {
             connection.emit(event, account, ...args);
+            sendDataWebhook(account, event, ...args);
         });
     }
 };
@@ -63,18 +66,17 @@ const generateQrImage = (account, qr, connection) => {
     });
 };
 const handleError = (e) => {
-    console.error(e);
+    console.error('handleError', e);
     // Consider adding more error handling here
 };
 
 function createClient(account) {
     if (!checkClient(account)) {
-        console.log(account);
-        
+
         let client = new Client({
             authStrategy: new LocalAuth({clientId: account}),
         });
-        
+
         clients[account].client = client;
         if (socketServer !== null) {
             if (!clients[account].sockets.hasOwnProperty(socketServer.id)) {
@@ -83,11 +85,13 @@ function createClient(account) {
         }
         
         client.initialize();
-        
+
+        console.log('createClient:89', account);
+
         client.on('authenticated', () => {
             try {
                 clients[account].active = true;
-                emitToAllSockets(account, 'authenticated', 'Whatsapp is authenticated!');
+                emitToAllSockets(account, 'authenticated', 'Whatsapp is authenticated!')
             } catch (e) {
                 handleError(e.error);
             }
@@ -95,7 +99,7 @@ function createClient(account) {
         
         client.on('auth_failure', msg => {
             try {
-                emitToAllSockets(account, 'auth_failure', msg);
+                emitToAllSockets(account, 'auth_failure', msg)
             } catch (e) {
                 handleError(e.error);
             }
@@ -103,7 +107,7 @@ function createClient(account) {
         
         client.on('ready', () => {
             try {
-                emitToAllSockets(account, 'ready', 'Whatsapp is ready!');
+                emitToAllSockets(account, 'ready', 'Whatsapp is ready!')
             } catch (e) {
                 handleError(e.error);
             }
@@ -132,7 +136,7 @@ function createClient(account) {
          */
         client.on('chat_removed', (chat) => {
             try {
-                emitToAllSockets(account, 'chat_removed', chat);
+                emitToAllSockets(account, 'chat_removed', chat)
             } catch (e) {
                 handleError(e.error);
             }
@@ -140,7 +144,7 @@ function createClient(account) {
         
         client.on('chat_archived', (chat) => {
             try {
-                emitToAllSockets(account, 'chat_archived', chat);
+                emitToAllSockets(account, 'chat_archived', chat)
             } catch (e) {
                 handleError(e.error);
             }
@@ -158,19 +162,28 @@ function createClient(account) {
                 if (chat.isGroup || msg.from === 'status@broadcast') {
                     return
                 }
-                if (msg.hasMedia) {
-                    const media = await msg.downloadMedia();
-                    emitToAllSockets(account, 'message', msg, media);
-                    return;
-                }
-                
+
                 await client.getProfilePicUrl(msg.fromMe ? msg.to : msg.from)
-                    .then(profilePicUrl => {
+                    .then(async profilePicUrl => {
                         msg['avatar'] = profilePicUrl;
+
+                        if (msg.hasMedia) {
+                            const media = await msg.downloadMedia();
+                            emitToAllSockets(account, 'message', msg, media)
+                            return;
+                        }
+
                         emitToAllSockets(account, 'message', msg);
                     })
-                    .catch(error => {
+                    .catch(async error => {
                         msg['avatar'] = null;
+
+                        if (msg.hasMedia) {
+                            const media = await msg.downloadMedia();
+                            emitToAllSockets(account, 'message', msg, media)
+                            return;
+                        }
+
                         emitToAllSockets(account, 'message', msg);
                     });
                 
@@ -198,17 +211,31 @@ function createClient(account) {
                     //         emitToAllSockets(account, 'message_create', msg, media.url);
                     //     });
                     // }
-                    
+
                     await client.getProfilePicUrl(msg.to)
                         .then(async profilePicUrl => {
                             let chat = await msg.getChat();
                             msg['avatar'] = profilePicUrl;
                             msg['_data']['notifyNameTo'] = chat.name;
+
+                            if (msg.hasMedia) {
+                                const media = await msg.downloadMedia();
+                                emitToAllSockets(account, 'message', msg, media)
+                                return;
+                            }
+
                             emitToAllSockets(account, 'message_create', msg);
                         })
-                        .catch(error => {
+                        .catch(async error => {
                             msg['avatar'] = null;
                             msg['_data']['notifyNameTo'] = null;
+
+                            if (msg.hasMedia) {
+                                const media = await msg.downloadMedia();
+                                emitToAllSockets(account, 'message', msg, media)
+                                return;
+                            }
+
                             emitToAllSockets(account, 'message_create', msg);
                         });
                 }
@@ -350,26 +377,34 @@ function createClient(account) {
             /**
              * Information about the @param {message}:
              *
-             * 1. If a notification was emitted due to a group participant changing their phone number:
+             * 1. If a notification was emitted due to a group participant
+             * changing their phone number:
              * @param {message.author} is a participant's id before the change.
-             * @param {message.recipients[0]} is a participant's id after the change (a new one).
+             * @param {message.recipients[0]} is a participant's id after the
+             *     change (a new one).
              *
-             * 1.1 If the contact who changed their number WAS in the current user's contact list at the time of the change:
+             * 1.1 If the contact who changed their number WAS in the current
+             *     user's contact list at the time of the change:
              * @param {message.to} is a group chat id the event was emitted in.
-             * @param {message.from} is a current user's id that got an notification message in the group.
-             * Also the @param {message.fromMe} is TRUE.
+             * @param {message.from} is a current user's id that got an
+             *     notification message in the group. Also the @param
+             *     {message.fromMe} is TRUE.
              *
              * 1.2 Otherwise:
-             * @param {message.from} is a group chat id the event was emitted in.
+             * @param {message.from} is a group chat id the event was emitted
+             *     in.
              * @param {message.to} is @type {undefined}.
              * Also @param {message.fromMe} is FALSE.
              *
-             * 2. If a notification was emitted due to a contact changing their phone number:
+             * 2. If a notification was emitted due to a contact changing their
+             *     phone number:
              * @param {message.templateParams} is an array of two user's ids:
-             * the old (before the change) and a new one, stored in alphabetical order.
-             * @param {message.from} is a current user's id that has a chat with a user,
-             * whos phone number was changed.
-             * @param {message.to} is a user's id (after the change), the current user has a chat with.
+             * the old (before the change) and a new one, stored in
+             *     alphabetical order.
+             * @param {message.from} is a current user's id that has a chat
+             *     with a user, whos phone number was changed.
+             * @param {message.to} is a user's id (after the change), the
+             *     current user has a chat with.
              */
         });
         
@@ -443,9 +478,9 @@ function getTypeWhatsApp(client) {
 }
 
 async function getMe(client) {
-    return await client.getProfilePicUrl(this.info.wid._serialized)
+    return await client.getProfilePicUrl(client.info.wid._serialized)
         .then(profilePicUrl => {
-            client.info.avatar = profilePicUrl;
+            client.info.avatar = profilePicUrl ?? null;
             client.info.type_whatsapp = getTypeWhatsApp(client);
             return client.info;
         })
@@ -470,21 +505,18 @@ io.on("connection", socket => {
         socket.on("disconnect", (reason) => {
             socket.handshake.headers.account_number.split(',').forEach((account, index) => {
                 updateListSockets(account, socket, true);
-                if (checkClient(account) && Object.keys(clients[account].sockets).length === 0) {
-                    clients[account].client.destroy();
-                    clients[account].client = null;
-                }
             });
         });
         
         socket.on('get_me', (account) => {
-            console.log(clients[account].client.info);
+            console.log('get_me', clients[account].client.info);
             if (!clients[account].client.info) {
                 clients[account].client.initialize();
                 return
             }
             getMe(clients[account].client).then(info => {
                 socket.emit('get_me', account, info);
+                sendDataWebhook(account, 'get_me', info);
             });
         });
         
@@ -496,16 +528,25 @@ io.on("connection", socket => {
             }
             socket.emit('destroy_connection_result', account);
         });
+
+        socket.on('destroy_connection_force', (data) => {
+            const [account] = data;
+            if (clients.hasOwnProperty(account) && clients[account].client !== null) {
+                clients[account].client.destroy();
+                clients[account].client = null;
+            }
+            socket.emit('destroy_connection_result', account);
+        });
         
         socket.on('send_seen', (data) => {
             const [account, chatId] = data;
-            
-            if (clients.hasOwnProperty(account) && clients[account].client !== null) {
-                clients[account].client.sendSeen(chatId);
-            }
+
+            // if (clients.hasOwnProperty(account) && clients[account].client
+            // !== null) { clients[account].client.sendSeen(chatId); }
         });
         
         socket.on('send_message', (data) => {
+            console.log('send_message', data)
             const [account, chatId, message, quotedId] = data;
             
             if (clients.hasOwnProperty(account) && clients[account].client !== null) {
@@ -538,9 +579,51 @@ io.on("connection", socket => {
     }
 });
 
-
-
 httpServer.listen(1411, function () {
     console.log('App running on *: ' + 1411);
 });
 
+function sendDataWebhook(account, event, ...args) {
+    const ignoreEvents = ['authenticated', 'ready', 'loading_screen', 'qr', 'auth_failure'];
+    if (ignoreEvents.includes(event)) {
+        return;
+    }
+
+    let data = JSON.stringify({
+        "account": account,
+        "event": event,
+        "payload": {...args},
+    });
+
+    // Aquí es donde calcularías la longitud del contenido. Esto dependerá
+    // de tu solicitud específica.
+    const contentLength = Buffer.byteLength(data, 'utf8');
+    // Aquí es donde calcularías las firmas. Esto dependerá de tu algoritmo
+    // de firma específico.
+    const signature = crypto.createHmac('sha256', process.env.CDC_WEBHOOK_SECRET).update(data).digest('hex');
+    const signature256 = crypto.createHmac('sha256', process.env.CDC_WEBHOOK_SECRET_256).update(data).digest('hex');
+
+    let config = {
+        method: 'post',
+        maxBodyLength: Infinity,
+        url: process.env.CDC_WEBHOOK_URL,
+        headers: {
+            'CDC-Signature': signature,
+            'CDC-Signature-256': signature256,
+            'Content-Length': contentLength.toString(),
+            'CDC-Event': event,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+        },
+        data: data
+    };
+
+
+    axios.request(config)
+        .then((response) => {
+            console.log('sendDataWebhook:595', JSON.stringify(response.data));
+        })
+        .catch((error) => {
+            console.log(error);
+        });
+}

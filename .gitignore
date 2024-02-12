@@ -6,3 +6,4 @@
 /.vscode
 .package-lock.json
 *.log
+/src/.wwebjs_auth/
