@@ -5,6 +5,7 @@ const qrcode = require('qrcode');
 const fs = require("fs");
 const axios = require('axios');
 const crypto = require('crypto');
+
 require('dotenv').config();
 
 const httpServer = createServer();
@@ -21,9 +22,6 @@ const updateListSockets = (account, socket, deleteSockets = false) => {
         if (clients.hasOwnProperty(account)) {
             if (clients[account].sockets.hasOwnProperty(socket.id)) {
                 delete clients[account].sockets[socket.id]
-            }
-            if (Object.keys(clients[account].sockets).length === 0) {
-                delete clients[account]
             }
         }
     } else {
@@ -47,8 +45,8 @@ const emitToAllSockets = (account, event, ...args) => {
     if (clients.hasOwnProperty(account)) {
         Object.values(clients[account].sockets).forEach((connection) => {
             connection.emit(event, account, ...args);
-            sendDataWebhook(account, event, ...args);
         });
+        sendDataWebhook(account, event, ...args);
     }
 };
 const generateQrImage = (account, qr, connection) => {
@@ -70,7 +68,7 @@ const handleError = (e) => {
     // Consider adding more error handling here
 };
 
-function createClient(account) {
+function createClient(account, socket) {
     if (!checkClient(account)) {
 
         let client = new Client({
@@ -212,7 +210,7 @@ function createClient(account) {
                     //     });
                     // }
 
-                    await client.getProfilePicUrl(msg.to)
+                    await client.getProfilePicUrl(msg.fromMe ? msg.to : msg.from)
                         .then(async profilePicUrl => {
                             let chat = await msg.getChat();
                             msg['avatar'] = profilePicUrl;
@@ -220,7 +218,7 @@ function createClient(account) {
 
                             if (msg.hasMedia) {
                                 const media = await msg.downloadMedia();
-                                emitToAllSockets(account, 'message', msg, media)
+                                emitToAllSockets(account, 'message_create', msg, media)
                                 return;
                             }
 
@@ -232,7 +230,7 @@ function createClient(account) {
 
                             if (msg.hasMedia) {
                                 const media = await msg.downloadMedia();
-                                emitToAllSockets(account, 'message', msg, media)
+                                emitToAllSockets(account, 'message_create', msg, media)
                                 return;
                             }
 
@@ -454,12 +452,21 @@ function createClient(account) {
                 handleError(e.error);
             }
         });
+    } else {
+        if (!clients[account].client.info) {
+            clients[account].client.initialize();
+            return
+        }
+        getMe(clients[account].client).then(info => {
+            socket.emit('get_me', account, info);
+            sendDataWebhook(account, 'get_me', info);
+        });
     }
 }
 
 const handleAccount = (account, socket) => {
     updateListSockets(account, socket);
-    createClient(account);
+    createClient(account, socket);
 };
 
 function isClientConnected(account) {
@@ -521,6 +528,7 @@ io.on("connection", socket => {
         });
         
         socket.on('destroy_connection', (data) => {
+            console.log('destroy_connection', data);
             const [account] = data;
             if (clients.hasOwnProperty(account) && clients[account].client !== null) {
                 clients[account].client.destroy();
@@ -540,17 +548,18 @@ io.on("connection", socket => {
         
         socket.on('send_seen', (data) => {
             const [account, chatId] = data;
-
+            console.log('send_seen', data)
             // if (clients.hasOwnProperty(account) && clients[account].client
-            // !== null) { clients[account].client.sendSeen(chatId); }
+            //     !== null) {
+            //     clients[account].client.sendSeen(chatId);
+            // }
         });
         
         socket.on('send_message', (data) => {
-            console.log('send_message', data)
             const [account, chatId, message, quotedId] = data;
             
             if (clients.hasOwnProperty(account) && clients[account].client !== null) {
-                clients[account].client.sendSeen(chatId);
+                clients[account].client?.sendSeen(chatId);
                 if (quotedId !== null) {
                     clients[account].client.getMessageById(quotedId).then((messageToReply) => {
                         if (messageToReply != null) {
@@ -579,11 +588,21 @@ io.on("connection", socket => {
     }
 });
 
+/**
+ * Iniciar el servidor
+ */
 httpServer.listen(1411, function () {
     console.log('App running on *: ' + 1411);
 });
 
+/**
+ * Enviar datos a webhook
+ * @param account
+ * @param event
+ * @param args
+ */
 function sendDataWebhook(account, event, ...args) {
+
     const ignoreEvents = ['authenticated', 'ready', 'loading_screen', 'qr', 'auth_failure'];
     if (ignoreEvents.includes(event)) {
         return;
