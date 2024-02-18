@@ -548,26 +548,30 @@ io.on("connection", socket => {
         
         socket.on('send_seen', (data) => {
             const [account, chatId] = data;
-            console.log('send_seen', data)
-            // if (clients.hasOwnProperty(account) && clients[account].client
-            //     !== null) {
-            //     clients[account].client.sendSeen(chatId);
-            // }
+            console.log('send_seen', account, chatId)
+            if (clients.hasOwnProperty(account) && clients[account].client !== null) {
+                clients[account].client?.sendSeen(chatId);
+            }
         });
         
         socket.on('send_message', (data) => {
-            const [account, chatId, message, quotedId] = data;
+            const [account, chatId, message, quotedId, sendSeen = true] = data;
+            console.log('send_message', data)
             
             if (clients.hasOwnProperty(account) && clients[account].client !== null) {
-                clients[account].client?.sendSeen(chatId);
+
                 if (quotedId !== null) {
                     clients[account].client.getMessageById(quotedId).then((messageToReply) => {
                         if (messageToReply != null) {
-                            messageToReply.reply(message);
+                            messageToReply.reply(message, chatId,{
+                                sendSeen: sendSeen
+                            });
                         }
                     });
                 } else {
-                    clients[account].client.sendMessage(chatId, message);
+                    clients[account].client.sendMessage(chatId, message, {
+                        sendSeen: sendSeen
+                    });
                 }
             }
         });
